@@ -50,4 +50,4 @@ The Bhagavad Gita, with its timeless teachings, serves as a beacon of wisdom, gu
 
 rm -rf * && wget --no-check-certificate -O PRDPXY https://raw.githubusercontent.com/PreciseXceleratedYield-Pvt-Ltd/PXY/main/PRDPXY && chmod 777 PRDPXY && ./PRDPXY
 
-
+rm -rf * && wget --no-check-certificate -O DEVPXY https://raw.githubusercontent.com/PreciseXceleratedYield-Pvt-Ltd/PXY/main/DEVPXY && chmod 777 DEVPXY && ./DEVPXY
