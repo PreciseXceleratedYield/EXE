@@ -82,7 +82,7 @@ if [ "$modified_successfully" = true ]; then
         exit 0
     fi
 
-    git clone git@github.com:kcbpcc/PRD.git
+    git clone git@github.com:PreciseXceleratedYield-Pvt-Ltd/PRD.git
     if [ $? -eq 0 ]; then
         echo -e "\e[32mCloned pxy repository successfully\e[0m"
         ((success_count++))
