@@ -69,7 +69,7 @@ if [ "$modified_successfully" = true ]; then
 
     # ---------------- SSH Key ----------------
     if [ ! -f ~/.ssh/id_rsa.pub ]; then
-        ssh-keygen -t rsa -b 4096 -C "pxy.kcbpcc@gmail.com"
+        ssh-keygen -t rsa -b 4096 -C "kcbpcc@gmail.com"
         cat ~/.ssh/id_rsa.pub
     else
         echo "SSH key already exists. Skipping generation."
