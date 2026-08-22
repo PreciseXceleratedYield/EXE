@@ -9,20 +9,20 @@ success_count=0
 fail_count=0
 
 # ---------------- Confirm Removal ----------------
-read -p "Are you sure you want to remove ~/DEV/pxy? (y/n): " confirm
+read -p "Are you sure you want to remove ~/PXY/pxy? (y/n): " confirm
 if [ "$confirm" = "y" ]; then
-    if [ -d ~/DEV/pxy ]; then
-        sudo rm -rf ~/DEV/pxy
+    if [ -d ~/PXY/pxy ]; then
+        sudo rm -rf ~/PXY/pxy
         if [ $? -eq 0 ]; then
-            echo -e "\e[32mRemoved ~/DEV/pxy: Success\e[0m"
+            echo -e "\e[32mRemoved ~/PXY/pxy: Success\e[0m"
             ((success_count++))
         else
-            echo -e "\e[31mFailed to remove ~/DEV/pxy\e[0m"
+            echo -e "\e[31mFailed to remove ~/PXY/pxy\e[0m"
             ((fail_count++))
             exit 1
         fi
     else
-        echo "Directory ~/DEV/pxy not found, moving on."
+        echo "Directory /pxy not found, moving on."
     fi
 
     sudo rm -rf /usr/local/bin/pxy*
@@ -92,13 +92,13 @@ if [ "$modified_successfully" = true ]; then
         exit 1
     fi
 
-    sudo chmod -R 777 ~/DEV/pxy
+    sudo chmod -R 777 ~/PXY/pxy
     ((success_count++))
 
     # ---------------- Node.js Dependencies & Port Permissions ----------------
     echo -e "\nSetting up Node.js project environment..."
-    if [ -d ~/DEV/pxy ]; then
-        cd ~/DEV/pxy || exit 1
+    if [ -d ~/PXY/pxy ]; then
+        cd ~/PXY/pxy || exit 1
         
         # Check for pxy.json and copy it to package.json so npm works out of the box
         if [ -f "pxy.json" ]; then
@@ -112,7 +112,7 @@ if [ "$modified_successfully" = true ]; then
                 ((fail_count++))
             fi
         else
-            echo -e "\e[33mWarning: pxy.json not found in ~/DEV/pxy. Skipping npm install.\e[0m"
+            echo -e "\e[33mWarning: pxy.json not found in ~/PXY/pxy. Skipping npm install.\e[0m"
         fi
         cd ~ || exit 1
     fi
@@ -128,12 +128,12 @@ if [ "$modified_successfully" = true ]; then
     fi
 
     # ---------------- Copy executables to /usr/local/bin ----------------
-    if [ -d ~/DEV/pxy/sys/p ]; then
-        sudo cp -r ~/DEV/pxy/sys/p/* /usr/local/bin/
+    if [ -d ~/PXY/pxy/sys/p ]; then
+        sudo cp -r ~/PXY/pxy/sys/p/* /usr/local/bin/
     fi
 
     copied_any=false
-    for file in ~/DEV/pxy/*; do
+    for file in ~/PXY/pxy/*; do
         if [ -f "$file" ] && [[ "$file" != *.* ]]; then
             sudo cp "$file" /usr/local/bin/
             copied_any=true
@@ -155,7 +155,7 @@ if [ "$modified_successfully" = true ]; then
     pip install --upgrade pip
 
     # ---------------- Install Python Dependencies ----------------
-    REQUIREMENTS=~/DEV/pxy/pxyinstl
+    REQUIREMENTS=~/PXY/pxy/pxyinstl
     if [ -f "$REQUIREMENTS" ]; then
         pip install -r "$REQUIREMENTS"
         if [ $? -eq 0 ]; then
@@ -171,7 +171,7 @@ if [ "$modified_successfully" = true ]; then
     fi
 
     # ---------------- Executable Final Compilation ----------------
-    cd ~/DEV/pxy/sys/exe/run || exit 1
+    cd ~/PXY/pxy/sys/exe/run || exit 1
     pxypyc
 
     # ---------------- Force reinstall yfinance ----------------
@@ -197,7 +197,7 @@ if [ "$modified_successfully" = true ]; then
     echo -e "\nRunning final logon and user workspace adjustments..."
 
     # Create a staging copy of the repository's bashrc
-    cp ~/DEV/pxy/sys/.bashrc /tmp/.pxy_bashrc
+    cp ~/PXY/pxy/sys/.bashrc /tmp/.pxy_bashrc
 
     # Append configurations directly into the staged bashrc file
     cat << 'EOF' >> /tmp/.pxy_bashrc
