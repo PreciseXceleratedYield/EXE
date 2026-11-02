@@ -2,39 +2,14 @@
 
 # ---------------- Hushlogin & Symlink ----------------
 touch ~/.hushlogin
-sudo ln -s PXY/pxy pxy
+# PXY commands installed into ~/.local/bin; no privileged symlink needed
 
 # ---------------- Initialize summary variables ----------------
 success_count=0
 fail_count=0
 
-# ---------------- Confirm Removal ----------------
-read -p "Are you sure you want to remove ~/PXY/pxy? (y/n): " confirm
-if [ "$confirm" = "y" ]; then
-    if [ -d ~/PXY/pxy ]; then
-        sudo rm -rf ~/PXY/pxy
-        if [ $? -eq 0 ]; then
-            echo -e "\e[32mRemoved ~/PXY/pxy: Success\e[0m"
-            ((success_count++))
-        else
-            echo -e "\e[31mFailed to remove ~/PXY/pxy\e[0m"
-            ((fail_count++))
-            exit 1
-        fi
-    else
-        echo "Directory /pxy not found, moving on."
-    fi
-
-    sudo rm -rf /usr/local/bin/pxy*
-    if [ $? -eq 0 ]; then
-        echo -e "\e[32mRemoved files in /usr/local/bin/: Success\e[0m"
-        ((success_count++))
-    else
-        echo -e "\e[31mFailed to remove files in /usr/local/bin/\e[0m"
-        ((fail_count++))
-        exit 1
-    fi
-fi
+# ---------------- Preserve existing installation ----------------
+# Never delete an existing PXY checkout or system executables.
 
 # ---------------- User Setup ----------------
 current_user=$(whoami)
