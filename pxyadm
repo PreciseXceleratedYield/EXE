@@ -77,10 +77,39 @@ if [ "$(uname -s)" = Linux ] && [ "$(id -un)" = pxy ]; then
   fi
 fi
 
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/pxyadm"
+HOST_FILE="$CONFIG_DIR/host"
 REMOTE_HOST=${PXY_SSH_HOST:-}
+if [ -z "$REMOTE_HOST" ] && [ -r "$HOST_FILE" ]; then
+  IFS= read -r REMOTE_HOST < "$HOST_FILE" || :
+fi
+
+SAVE_HOST=0
 if [ -z "$REMOTE_HOST" ]; then
-  printf 'pxyadm: set PXY_SSH_HOST to your server address or SSH host alias.\n' >&2
-  exit 1
+  printf 'PXY server IP or SSH host alias: ' >&2
+  if ! IFS= read -r REMOTE_HOST; then
+    printf '\npxyadm: no host entered.\n' >&2
+    exit 1
+  fi
+  SAVE_HOST=1
+fi
+
+case "$REMOTE_HOST" in
+  ''|-*|*[!a-zA-Z0-9._:%-]*)
+    printf 'pxyadm: enter a valid server IP or SSH host alias.\n' >&2
+    exit 1
+    ;;
+esac
+
+if [ "$SAVE_HOST" -eq 1 ]; then
+  (
+    umask 077
+    mkdir -p "$CONFIG_DIR"
+    host_tmp=$(mktemp "$CONFIG_DIR/host.XXXXXXXX")
+    trap 'rm -f "$host_tmp"' EXIT
+    printf '%s\n' "$REMOTE_HOST" > "$host_tmp"
+    mv -f "$host_tmp" "$HOST_FILE"
+  )
 fi
 
 # Password mode: use OS credential vault only; never save plaintext.
@@ -129,7 +158,7 @@ if [ -z "$PASSWORD" ]; then
   printf 'PXY Linux password (stored in %s): ' "$STORE" >&2
   STTY_STATE=$(stty -g 2>/dev/null || :)
   stty -echo 2>/dev/null || :
-  IFS= read -r PASSWORD
+  IFS= read -r PASSWORD || PASSWORD=
   if [ -n "$STTY_STATE" ]; then stty "$STTY_STATE" 2>/dev/null || :; fi
   printf '\n' >&2
   [ -n "$PASSWORD" ] || { printf 'pxyadm: empty password; aborting.\n' >&2; exit 1; }
