@@ -9,12 +9,12 @@ case "$SELF" in
 esac
 SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$SELF")" && pwd -P)
 SELF="$SELF_DIR/$(basename -- "$SELF")"
-USER_BIN="$(CDPATH= cd -- "$HOME" && pwd -P)/.local/bin"
+mkdir -p "$HOME/.local/bin"
+USER_BIN=$(CDPATH= cd -- "$HOME/.local/bin" && pwd -P)
 TARGET="$USER_BIN/pxyadm"
 
 # Download-and-run bootstrap: install to a user-owned directory, never sudo.
 if [ "$SELF" != "$TARGET" ]; then
-  mkdir -p "$USER_BIN"
   if [ ! -f "$TARGET" ] || ! cmp -s "$SELF" "$TARGET"; then
     install -m 755 "$SELF" "$TARGET"
     printf 'pxyadm: installed in %s (no sudo).\n' "$TARGET"
@@ -65,6 +65,7 @@ archive_path_launchers() (
   done
 )
 
+printf 'pxyadm: checking for older launchers.\n' >&2
 archive_path_launchers || printf 'pxyadm: could not back up all old launchers.\n' >&2
 
 download_launcher() {
@@ -80,6 +81,7 @@ download_launcher() {
 
 # On each launch, check the public EXE repository for a newer launcher.
 if [ "${PXYADM_UPDATED:-0}" != 1 ]; then
+  printf 'pxyadm: checking for updates (up to 15 seconds).\n' >&2
   TMP=$(mktemp "${TMPDIR:-/tmp}/pxyadm.XXXXXXXX") || TMP=
   if [ -n "$TMP" ]; then
     if download_launcher >"$TMP" 2>/dev/null \
@@ -173,7 +175,8 @@ esac
 
 if [ "$STORE" = none ] || ! command -v sshpass >/dev/null 2>&1; then
   printf 'pxyadm: secure password auto-login unavailable (needs sshpass and an OS credential vault).\n' >&2
-  exec ssh -o StrictHostKeyChecking=accept-new "$REMOTE_USER@$REMOTE_HOST"
+  printf 'pxyadm: connecting to %s@%s.\n' "$REMOTE_USER" "$REMOTE_HOST" >&2
+  exec ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "$REMOTE_USER@$REMOTE_HOST"
 fi
 
 if [ "${1:-}" = "--reset-password" ]; then
@@ -191,6 +194,7 @@ get_saved_password() {
     secret-service) secret-tool lookup application pxyadm host "$REMOTE_HOST" user "$REMOTE_USER" 2>/dev/null ;;
   esac
 }
+printf 'pxyadm: checking %s for the saved password.\n' "$STORE" >&2
 PASSWORD=$(get_saved_password) || PASSWORD=
 if [ -z "$PASSWORD" ]; then
   printf 'PXY Linux password (stored in %s): ' "$STORE" >&2
@@ -216,6 +220,7 @@ if [ -z "$PASSWORD" ]; then
 fi
 export SSHPASS="$PASSWORD"
 unset PASSWORD
-exec sshpass -e ssh -o StrictHostKeyChecking=accept-new \
+printf 'pxyadm: connecting to %s@%s.\n' "$REMOTE_USER" "$REMOTE_HOST" >&2
+exec sshpass -e ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new \
   -o PubkeyAuthentication=no -o PreferredAuthentications=password \
   "$REMOTE_USER@$REMOTE_HOST"
