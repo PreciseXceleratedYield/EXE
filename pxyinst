@@ -13,19 +13,58 @@ trap 'fail "Installation failed at line $LINENO"' ERR
 [[ "$EUID" -ne 0 ]] || fail "Run as your normal PXY user, not root."
 command -v sudo >/dev/null || fail "sudo is required."
 command -v apt-get >/dev/null || fail "Requires Ubuntu/Debian apt."
+REPO="git@github.com:PreciseXceleratedYield/PXY.git"
+
+if [[ -e "$ROOT" && ! -d "$ROOT/.git" ]]; then
+    fail "$ROOT exists but is not a Git checkout; refusing to overwrite it."
+fi
+
+if [[ ! -d "$ROOT/.git" ]]; then
+    if ! command -v git >/dev/null || ! command -v ssh >/dev/null || ! command -v ssh-keygen >/dev/null; then
+        sudo apt-get update
+        sudo apt-get install -y git openssh-client
+    fi
+
+    ssh_command="${GIT_SSH_COMMAND:-ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new}"
+    clone_config=()
+    log "Checking GitHub access to the PXY repository."
+    if ! probe="$(GIT_SSH_COMMAND="$ssh_command" git ls-remote --exit-code "$REPO" HEAD 2>&1)"; then
+        if [[ "$probe" != *"Permission denied (publickey)"* && "$probe" != *"Repository not found"* ]]; then
+            fail "GitHub access check failed: $probe"
+        fi
+
+        key="$HOME/.ssh/pxy_github"
+        mkdir -p -m 700 "$HOME/.ssh"
+        if [[ ! -e "$key" && ! -e "$key.pub" ]]; then
+            ssh-keygen -q -t ed25519 -N '' -f "$key" -C "pxy@$(hostname)" </dev/null
+        fi
+        [[ -f "$key" && -f "$key.pub" ]] || fail "Incomplete deploy key at $key. Restore the matching key files before retrying."
+
+        printf -v quoted_key '%q' "$key"
+        ssh_command="ssh -i $quoted_key -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new"
+        if ! probe="$(GIT_SSH_COMMAND="$ssh_command" git ls-remote --exit-code "$REPO" HEAD 2>&1)"; then
+            if [[ "$probe" != *"Permission denied (publickey)"* && "$probe" != *"Repository not found"* ]]; then
+                fail "GitHub deploy-key check failed: $probe"
+            fi
+            log "Add this public key as a read-only deploy key:"
+            log "https://github.com/PreciseXceleratedYield/PXY/settings/keys"
+            cat "$key.pub"
+            fail "After approving the deploy key on GitHub, rerun this installer."
+        fi
+        clone_config=(--config "core.sshCommand=$ssh_command")
+    fi
+
+    log "Cloning the PXY repository."
+    GIT_SSH_COMMAND="$ssh_command" git clone "${clone_config[@]}" "$REPO" "$ROOT"
+else
+    log "Existing repository preserved at $ROOT (run pxyupdate separately for code updates)."
+fi
+
 touch "$HOME/.hushlogin"
 sudo -v
 sudo apt-get update
 sudo apt-get install -y git python3 python3-venv python3-pip nodejs npm tmux openssh-client
 
-if [[ -d "$ROOT/.git" ]]; then
-    log "Existing repository preserved at $ROOT (run pxyupdate separately for code updates)."
-elif [[ -e "$ROOT" ]]; then
-    fail "$ROOT exists but is not a Git checkout; refusing to overwrite it."
-else
-    log "Cloning private PXY repository; GitHub SSH access is required."
-    git clone git@github.com:PreciseXceleratedYield/PXY.git "$ROOT"
-fi
 [[ -f "$APP/pxy.js" && -f "$APP/sys/sysexepxy.py" ]] || fail "Missing current PXY application files."
 
 if [[ ! -x "$VENV/bin/python3" ]]; then
