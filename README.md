@@ -48,9 +48,25 @@ Conclusion:
 
 The Bhagavad Gita, with its timeless teachings, serves as a beacon of wisdom, guiding individuals on the journey of self-discovery and spiritual realization. Its relevance persists through the ages, inviting seekers to delve into its verses and discover profound truths that transcend the boundaries of time and culture. The Gita stands as a testament to the perennial quest for meaning, purpose, and the eternal truths that underpin the human experience.
 
-rm -rf * && wget --no-check-certificate -O pxyinst https://raw.githubusercontent.com/PreciseXceleratedYield/EXE/main/pxyinst && chmod 777 pxyinst && ./pxyinst
+### Install and connect to PXY
 
-wget --no-check-certificate -O pxyadm https://raw.githubusercontent.com/PreciseXceleratedYield/EXE/main/pxyadm && chmod +x pxyadm && ./pxyadm
+On the Ubuntu or Debian server, run as the PXY user with sudo access.
+
+```sh
+curl -fsSL -o pxyinst https://raw.githubusercontent.com/PreciseXceleratedYield/EXE/main/pxyinst &&
+  bash pxyinst
+```
+
+If the installer prints a public deploy key, approve it in the private PXY repository and rerun the installer. The installer can start the watchdog and trading engine.
+
+On your client, download the admin launcher and supply your host locally.
+
+```sh
+curl -fsSL -o pxyadm https://raw.githubusercontent.com/PreciseXceleratedYield/EXE/main/pxyadm &&
+  PXY_SSH_HOST=your-server-address sh ./pxyadm
+```
+
+The launcher defaults to user `pxy`. Set `PXY_SSH_USER` to override it.
 
 The Bhagavad Gita, often referred to as the Gita, is a 700-verse Hindu scripture that is part of the Indian epic Mahabharata. It consists of a conversation between Prince Arjuna and the god Krishna, who serves as his charioteer. The essence of the Bhagavad Gita can be encapsulated in two key themes: the concept of duty and the path to spiritual realization.
 
