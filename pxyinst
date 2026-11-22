@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PXY installer: safe first-time setup and repeatable maintenance.
+# PXY installer: fresh setup with a recoverable backup of any prior installation.
 # Does not stop or restart active trading processes.
 set -Eeuo pipefail
 ROOT="$HOME/PXY"
@@ -19,45 +19,45 @@ if [[ -e "$ROOT" && ! -d "$ROOT/.git" ]]; then
     fail "$ROOT exists but is not a Git checkout; refusing to overwrite it."
 fi
 
-if [[ ! -d "$ROOT/.git" ]]; then
-    if ! command -v git >/dev/null || ! command -v ssh >/dev/null || ! command -v ssh-keygen >/dev/null; then
-        sudo apt-get update
-        sudo apt-get install -y git openssh-client
-    fi
+if ! command -v git >/dev/null || ! command -v ssh >/dev/null || ! command -v ssh-keygen >/dev/null; then
+    sudo apt-get update
+    sudo apt-get install -y git openssh-client
+fi
 
-    ssh_command="${GIT_SSH_COMMAND:-ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new}"
-    clone_config=()
-    log "Checking GitHub access to the PXY repository."
-    if ! probe="$(GIT_SSH_COMMAND="$ssh_command" git ls-remote --exit-code "$REPO" HEAD 2>&1)"; then
-        if [[ "$probe" != *"Permission denied (publickey)"* && "$probe" != *"Repository not found"* ]]; then
-            fail "GitHub access check failed: $probe"
-        fi
-
-        key="$HOME/.ssh/pxy_github"
-        mkdir -p -m 700 "$HOME/.ssh"
-        if [[ ! -e "$key" && ! -e "$key.pub" ]]; then
-            ssh-keygen -q -t ed25519 -N '' -f "$key" -C "pxy@$(hostname)" </dev/null
-        fi
-        [[ -f "$key" && -f "$key.pub" ]] || fail "Incomplete deploy key at $key. Restore the matching key files before retrying."
-
-        printf -v quoted_key '%q' "$key"
-        ssh_command="ssh -i $quoted_key -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new"
-        if ! probe="$(GIT_SSH_COMMAND="$ssh_command" git ls-remote --exit-code "$REPO" HEAD 2>&1)"; then
-            if [[ "$probe" != *"Permission denied (publickey)"* && "$probe" != *"Repository not found"* ]]; then
-                fail "GitHub deploy-key check failed: $probe"
-            fi
-            log "Add this public key as a read-only deploy key:"
-            log "https://github.com/PreciseXceleratedYield/PXY/settings/keys"
-            cat "$key.pub"
-            fail "After approving the deploy key on GitHub, rerun this installer."
-        fi
+ssh_command="${GIT_SSH_COMMAND:-ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new}"
+clone_config=()
+if [[ -d "$ROOT/.git" && -z "${GIT_SSH_COMMAND:-}" ]]; then
+    saved_ssh_command=$(git -C "$ROOT" config --local --get core.sshCommand || true)
+    if [[ -n "$saved_ssh_command" ]]; then
+        ssh_command="$saved_ssh_command"
         clone_config=(--config "core.sshCommand=$ssh_command")
     fi
+fi
+log "Checking GitHub access to the PXY repository."
+if ! probe="$(GIT_SSH_COMMAND="$ssh_command" git ls-remote --exit-code "$REPO" HEAD 2>&1)"; then
+    if [[ "$probe" != *"Permission denied (publickey)"* && "$probe" != *"Repository not found"* ]]; then
+        fail "GitHub access check failed: $probe"
+    fi
 
-    log "Cloning the PXY repository."
-    GIT_SSH_COMMAND="$ssh_command" git clone "${clone_config[@]}" "$REPO" "$ROOT"
-else
-    log "Existing repository preserved at $ROOT (run pxyupdate separately for code updates)."
+    key="$HOME/.ssh/pxy_github"
+    mkdir -p -m 700 "$HOME/.ssh"
+    if [[ ! -e "$key" && ! -e "$key.pub" ]]; then
+        ssh-keygen -q -t ed25519 -N '' -f "$key" -C "pxy@$(hostname)" </dev/null
+    fi
+    [[ -f "$key" && -f "$key.pub" ]] || fail "Incomplete deploy key at $key. Restore the matching key files before retrying."
+
+    printf -v quoted_key '%q' "$key"
+    ssh_command="ssh -i $quoted_key -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new"
+    if ! probe="$(GIT_SSH_COMMAND="$ssh_command" git ls-remote --exit-code "$REPO" HEAD 2>&1)"; then
+        if [[ "$probe" != *"Permission denied (publickey)"* && "$probe" != *"Repository not found"* ]]; then
+            fail "GitHub deploy-key check failed: $probe"
+        fi
+        log "Add this public key as a read-only deploy key:"
+        log "https://github.com/PreciseXceleratedYield/PXY/settings/keys"
+        cat "$key.pub"
+        fail "After approving the deploy key on GitHub, rerun this installer."
+    fi
+    clone_config=(--config "core.sshCommand=$ssh_command")
 fi
 
 touch "$HOME/.hushlogin"
@@ -65,11 +65,31 @@ sudo -v
 sudo apt-get update
 sudo apt-get install -y git python3 python3-venv python3-pip nodejs npm tmux openssh-client
 
-[[ -f "$APP/pxy.js" && -f "$APP/sys/sysexepxy.py" ]] || fail "Missing current PXY application files."
-
-if [[ ! -x "$VENV/bin/python3" ]]; then
-    python3 -m venv "$VENV"
+# The watchdog can restart the engine or dashboard while their files are moved.
+if systemctl is-active --quiet pxywatch.service 2>/dev/null ||
+   pgrep -u "$EUID" -f '[s]ysexepxy[.]py|[n]ode .*pxy[.]js|[/]pxy/sys/exe/exe[a-z]*pxy[.]py' >/dev/null ||
+   tmux has-session -t '=pxy-engine' 2>/dev/null ||
+   tmux has-session -t '=pxy-web' 2>/dev/null; then
+    fail "PXY is still running. Stop it with pxywatch stop before reinstalling."
 fi
+
+# Prepare and validate the replacement before moving the existing installation.
+staging=$(mktemp -d "$HOME/.pxy-install.XXXXXXXX")
+trap 'rm -rf -- "$staging"' EXIT
+log "Cloning a fresh PXY checkout."
+GIT_SSH_COMMAND="$ssh_command" git clone "${clone_config[@]}" "$REPO" "$staging/PXY"
+[[ -f "$staging/PXY/pxy/pxy.js" && -f "$staging/PXY/pxy/sys/sysexepxy.py" ]] ||
+    fail "Missing current PXY application files in the fresh clone."
+
+if [[ -e "$ROOT" || -L "$ROOT" || -e "$VENV" || -L "$VENV" ]]; then
+    backup=$(mktemp -d "$HOME/pxy-backup-$(date +%Y%m%d-%H%M%S).XXXXXXXX")
+    log "Saving previous checkout and Python environment in $backup."
+    if [[ -e "$ROOT" || -L "$ROOT" ]]; then mv -- "$ROOT" "$backup/PXY"; fi
+    if [[ -e "$VENV" || -L "$VENV" ]]; then mv -- "$VENV" "$backup/env"; fi
+fi
+mv -- "$staging/PXY" "$ROOT"
+
+python3 -m venv "$VENV"
 "$VENV/bin/python3" -m pip install --upgrade pip
 [[ -f "$APP/pxyinstl" ]] || fail "Missing $APP/pxyinstl"
 "$VENV/bin/python3" -m pip install -r "$APP/pxyinstl"
@@ -97,6 +117,15 @@ fi
 install -m 644 "$ROOT/.bashrc" "$HOME/.bashrc"
 log "Login will show the copyright notice from syscprtpxy.py (if dependencies are available)."
 
+# Run the checkout updater directly so PATH cannot select an older copy.
+(
+    cd "$APP"
+    log "Running pxyupdate (1 of 2)."
+    bash ./pxyupdate
+    log "Running pxyupdate (2 of 2)."
+    bash ./pxyupdate
+)
+
 [[ -f "$APP/pxywatch" ]] || fail "Missing pxywatch."
 if command -v systemctl >/dev/null && [[ -d /run/systemd/system ]]; then
     bash "$APP/pxywatch" install
@@ -110,14 +139,6 @@ if command -v systemctl >/dev/null && [[ -d /run/systemd/system ]]; then
 else
     log "systemd unavailable; watchdog not installed."
 fi
-# Run the checkout updater directly so PATH cannot select an older copy.
-(
-    cd "$APP"
-    log "Running pxyupdate (1 of 2)."
-    bash ./pxyupdate
-    log "Running pxyupdate (2 of 2)."
-    bash ./pxyupdate
-)
 
 log "Installation complete. Open a new Bash session to see the login banner."
 log "No running trading engine or dashboard was deliberately stopped or restarted."
