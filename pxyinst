@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # PXY installer: fresh setup with a recoverable backup of any prior installation.
-# Does not stop or restart active trading processes.
+# Stops an existing PXY runtime before replacing its files.
 set -Eeuo pipefail
 ROOT="$HOME/PXY"
 APP="$ROOT/pxy"
@@ -65,21 +65,29 @@ sudo -v
 sudo apt-get update
 sudo apt-get install -y git python3 python3-venv python3-pip nodejs npm tmux openssh-client
 
-# The watchdog can restart the engine or dashboard while their files are moved.
-if systemctl is-active --quiet pxywatch.service 2>/dev/null ||
-   pgrep -u "$EUID" -f '[s]ysexepxy[.]py|[n]ode .*pxy[.]js|[/]pxy/sys/exe/exe[a-z]*pxy[.]py' >/dev/null ||
-   tmux has-session -t '=pxy-engine' 2>/dev/null ||
-   tmux has-session -t '=pxy-web' 2>/dev/null; then
-    fail "PXY is still running. Stop it with pxywatch stop before reinstalling."
-fi
-
 # Prepare and validate the replacement before moving the existing installation.
 staging=$(mktemp -d "$HOME/.pxy-install.XXXXXXXX")
 trap 'rm -rf -- "$staging"' EXIT
 log "Cloning a fresh PXY checkout."
 GIT_SSH_COMMAND="$ssh_command" git clone "${clone_config[@]}" "$REPO" "$staging/PXY"
-[[ -f "$staging/PXY/pxy/pxy.js" && -f "$staging/PXY/pxy/sys/sysexepxy.py" ]] ||
+[[ -f "$staging/PXY/pxy/pxy.js" && -f "$staging/PXY/pxy/sys/sysexepxy.py" && -f "$staging/PXY/pxy/pxywatch" ]] ||
     fail "Missing current PXY application files in the fresh clone."
+
+pxy_is_running() {
+    systemctl is-active --quiet pxywatch.service 2>/dev/null ||
+        pgrep -u "$EUID" -f '[s]ysexepxy[.]py|[n]ode .*pxy[.]js|[/]pxy/sys/exe/exe[a-z]*pxy[.]py' >/dev/null ||
+        tmux has-session -t '=pxy-engine' 2>/dev/null ||
+        tmux has-session -t '=pxy-web' 2>/dev/null
+}
+
+if pxy_is_running; then
+    log "Stopping the watchdog, engine and WebPXY before reinstalling."
+    bash "$staging/PXY/pxy/pxywatch" stop ||
+        fail "PXY shutdown failed. The current installation was not moved."
+    if pxy_is_running; then
+        fail "A PXY service or process is still running. The current installation was not moved."
+    fi
+fi
 
 if [[ -e "$ROOT" || -L "$ROOT" || -e "$VENV" || -L "$VENV" ]]; then
     backup=$(mktemp -d "$HOME/pxy-backup-$(date +%Y%m%d-%H%M%S).XXXXXXXX")
@@ -134,11 +142,10 @@ if command -v systemctl >/dev/null && [[ -d /run/systemd/system ]]; then
         log "Watchdog already running; not restarting it or the tmux sessions."
     else
         sudo systemctl start pxywatch.service
-        log "Watchdog started (will monitor existing engine/dashboard processes)."
+        log "Watchdog started."
     fi
 else
     log "systemd unavailable; watchdog not installed."
 fi
 
 log "Installation complete. Open a new Bash session to see the login banner."
-log "No running trading engine or dashboard was deliberately stopped or restarted."
