@@ -1,8 +1,15 @@
 #!/bin/sh
 # PXY self-updating cross-platform SSH launcher.
-# PXYADM_RELEASE=2
+# PXYADM_RELEASE=3
 # Increase PXYADM_RELEASE whenever a new launcher is published.
 set -eu
+
+case "${1:-}" in
+  '') reset=0 ;;
+  -reset|--reset) reset=1 ;;
+  *) printf 'Usage: pxyadm [-reset]\n' >&2; exit 2 ;;
+esac
+[ "$#" -le 1 ] || { printf 'Usage: pxyadm [-reset]\n' >&2; exit 2; }
 
 SELF=$0
 case "$SELF" in
@@ -11,12 +18,15 @@ case "$SELF" in
 esac
 SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$SELF")" && pwd -P)
 SELF="$SELF_DIR/$(basename -- "$SELF")"
-mkdir -p "$HOME/.local/bin"
-USER_BIN=$(CDPATH= cd -- "$HOME/.local/bin" && pwd -P)
+USER_BIN="$HOME/.local/bin"
+if [ "$reset" -eq 1 ]; then
+  mkdir -p "$USER_BIN"
+  USER_BIN=$(CDPATH= cd -- "$USER_BIN" && pwd -P)
+fi
 TARGET="$USER_BIN/pxyadm"
 
 # Download-and-run bootstrap: install to a user-owned directory, never sudo.
-if [ "$SELF" != "$TARGET" ]; then
+if [ "$reset" -eq 1 ] && [ "$SELF" != "$TARGET" ]; then
   if [ ! -f "$TARGET" ] || ! cmp -s "$SELF" "$TARGET"; then
     install -m 755 "$SELF" "$TARGET"
     printf 'pxyadm: installed in %s (no sudo).\n' "$TARGET"
@@ -36,6 +46,7 @@ fi
 
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/pxyadm"
 HOST_FILE="$CONFIG_DIR/host"
+USER_FILE="$CONFIG_DIR/user"
 CREDENTIALS_FILE="$CONFIG_DIR/credentials"
 
 remove_saved_password() (
@@ -59,7 +70,7 @@ remove_saved_password() (
   esac
 )
 
-if [ "${1:-}" = "-reset" ] || [ "${1:-}" = "--reset" ]; then
+reset_local_settings() {
   reset_failed=0
   if [ -r "$CREDENTIALS_FILE" ]; then
     while IFS=' ' read -r saved_host saved_user; do
@@ -76,9 +87,7 @@ if [ "${1:-}" = "-reset" ] || [ "${1:-}" = "--reset" ]; then
     exit 1
   fi
   rm -rf -- "$CONFIG_DIR"
-  printf 'pxyadm: local settings and launcher backups cleared. Run pxyadm to set up again.\n'
-  exit 0
-fi
+}
 
 # Archive old launcher copies only where this user can write.
 archive_path_launchers() (
@@ -113,8 +122,7 @@ archive_path_launchers() (
   done
 )
 
-printf 'pxyadm: checking for older launchers.\n' >&2
-archive_path_launchers || printf 'pxyadm: could not back up all old launchers.\n' >&2
+
 
 download_launcher() {
   url="https://raw.githubusercontent.com/PreciseXceleratedYield/EXE/main/pxyadm"
@@ -127,8 +135,8 @@ download_launcher() {
   fi
 }
 
-# On each launch, check the public EXE repository for a newer launcher.
-if [ "${PXYADM_UPDATED:-0}" != 1 ]; then
+# Check for launcher updates only while reconfiguring.
+if [ "$reset" -eq 1 ] && [ "${PXYADM_UPDATED:-0}" != 1 ]; then
   printf 'pxyadm: checking for updates (up to 15 seconds).\n' >&2
   TMP=$(mktemp "${TMPDIR:-/tmp}/pxyadm.XXXXXXXX") || TMP=
   if [ -n "$TMP" ]; then
@@ -158,29 +166,20 @@ if ! command -v ssh >/dev/null 2>&1; then
 fi
 
 REMOTE_USER=${PXY_SSH_USER:-pxy}
-# On the PXY host, open its existing system menu instead of SSHing to itself.
-# Require the Linux service account and the actual installed PXY tree;
-# client machines (including iSH) continue through the remote login path.
-if [ "$(uname -s)" = Linux ] && [ "$(id -un)" = pxy ]; then
-  LOCAL_MENU="$HOME/PXY/pxy/pxyadm"
-  if [ -f "$LOCAL_MENU" ] && [ -f "$HOME/PXY/pxy/pxy" ]; then
-    exec /bin/bash "$LOCAL_MENU" "$@"
-  fi
+if [ "$reset" -eq 0 ] && [ -r "$USER_FILE" ]; then
+  IFS= read -r REMOTE_USER < "$USER_FILE" || :
 fi
 
-REMOTE_HOST=${PXY_SSH_HOST:-}
-if [ -z "$REMOTE_HOST" ] && [ -r "$HOST_FILE" ]; then
-  IFS= read -r REMOTE_HOST < "$HOST_FILE" || :
-fi
-
-SAVE_HOST=0
-if [ -z "$REMOTE_HOST" ]; then
+if [ "$reset" -eq 1 ]; then
+  archive_path_launchers || printf 'pxyadm: could not move all old launchers.\n' >&2
+  reset_local_settings
   printf 'PXY server IP or SSH host alias: ' >&2
-  if ! IFS= read -r REMOTE_HOST; then
-    printf '\npxyadm: no host entered.\n' >&2
-    exit 1
-  fi
-  SAVE_HOST=1
+  IFS= read -r REMOTE_HOST || exit 1
+elif [ -r "$HOST_FILE" ]; then
+  IFS= read -r REMOTE_HOST < "$HOST_FILE" || :
+else
+  printf 'pxyadm: no saved host. Run pxyadm -reset to set up.\n' >&2
+  exit 1
 fi
 
 case "$REMOTE_HOST" in
@@ -190,51 +189,13 @@ case "$REMOTE_HOST" in
     ;;
 esac
 
-if [ "$SAVE_HOST" -eq 1 ]; then
-  (
-    umask 077
-    mkdir -p "$CONFIG_DIR"
-    host_tmp=$(mktemp "$CONFIG_DIR/host.XXXXXXXX")
-    trap 'rm -f "$host_tmp"' EXIT
-    printf '%s\n' "$REMOTE_HOST" > "$host_tmp"
-    mv -f "$host_tmp" "$HOST_FILE"
-  )
-fi
-
-# Password mode: use OS credential vault only; never save plaintext.
-# Requires sshpass and a supported credential store.
 SERVICE="PXY-SSH-$REMOTE_HOST"
-case "$(uname -s)" in
-  Darwin)
-    if command -v security >/dev/null 2>&1; then
-      STORE=keychain
-    else
-      STORE=none
-    fi
-    ;;
-  Linux)
-    if command -v secret-tool >/dev/null 2>&1; then
-      STORE=secret-service
-    else
-      STORE=none
-    fi
-    ;;
-  *) STORE=none ;;
-esac
-
-if [ "$STORE" = none ] || ! command -v sshpass >/dev/null 2>&1; then
-  printf 'pxyadm: secure password auto-login unavailable (needs sshpass and an OS credential vault).\n' >&2
-  printf 'pxyadm: connecting to %s@%s.\n' "$REMOTE_USER" "$REMOTE_HOST" >&2
-  exec ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "$REMOTE_USER@$REMOTE_HOST"
-fi
-
-if [ "${1:-}" = "--reset-password" ]; then
-  case "$STORE" in
-    keychain) security delete-generic-password -s "$SERVICE" -a "$REMOTE_USER" >/dev/null 2>&1 || : ;;
-    secret-service) secret-tool clear application pxyadm host "$REMOTE_HOST" user "$REMOTE_USER" || : ;;
+STORE=none
+if command -v sshpass >/dev/null 2>&1; then
+  case "$(uname -s)" in
+    Darwin) if command -v security >/dev/null 2>&1; then STORE=keychain; fi ;;
+    Linux) if command -v secret-tool >/dev/null 2>&1; then STORE=secret-service; fi ;;
   esac
-  printf 'pxyadm: stored password cleared.\n'
-  exit 0
 fi
 
 get_saved_password() {
@@ -243,41 +204,57 @@ get_saved_password() {
     secret-service) secret-tool lookup application pxyadm host "$REMOTE_HOST" user "$REMOTE_USER" 2>/dev/null ;;
   esac
 }
-printf 'pxyadm: checking %s for the saved password.\n' "$STORE" >&2
-PASSWORD=$(get_saved_password) || PASSWORD=
-if [ -z "$PASSWORD" ]; then
-  printf 'PXY Linux password (stored in %s): ' "$STORE" >&2
+
+ssh_with_password() {
+  SSHPASS="$PASSWORD" sshpass -e ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new \
+    -o PubkeyAuthentication=no -o PreferredAuthentications=password -o NumberOfPasswordPrompts=1 \
+    "$REMOTE_USER@$REMOTE_HOST" "$@"
+}
+
+if [ "$reset" -eq 0 ]; then
+  printf 'pxyadm: connecting to %s@%s.\n' "$REMOTE_USER" "$REMOTE_HOST" >&2
+  if [ "$STORE" = none ]; then
+    exec ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "$REMOTE_USER@$REMOTE_HOST"
+  fi
+  PASSWORD=$(get_saved_password) || PASSWORD=
+  if [ -z "$PASSWORD" ]; then
+    printf 'pxyadm: no saved password. Run pxyadm -reset to set up.\n' >&2
+    exit 1
+  fi
+  ssh_with_password
+  exit 0
+fi
+
+if [ "$STORE" = none ]; then
+  printf 'pxyadm: SSH will verify your login. A supported credential vault and sshpass are required to save a password.\n' >&2
+  ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "$REMOTE_USER@$REMOTE_HOST" true ||
+    { printf 'pxyadm: login verification failed. Run pxyadm -reset to retry.\n' >&2; exit 1; }
+else
+  printf 'PXY Linux password: ' >&2
   STTY_STATE=$(stty -g 2>/dev/null || :)
   stty -echo 2>/dev/null || :
   IFS= read -r PASSWORD || PASSWORD=
   if [ -n "$STTY_STATE" ]; then stty "$STTY_STATE" 2>/dev/null || :; fi
   printf '\n' >&2
-  [ -n "$PASSWORD" ] || { printf 'pxyadm: empty password; aborting.\n' >&2; exit 1; }
-  # Verify before saving, so mistyped passwords are never persisted.
-  if ! SSHPASS="$PASSWORD" sshpass -e ssh -o BatchMode=no -o PubkeyAuthentication=no \
-    -o PreferredAuthentications=password -o NumberOfPasswordPrompts=1 \
-    -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new \
-    "$REMOTE_USER@$REMOTE_HOST" true; then
-    printf 'pxyadm: password verification failed; nothing saved.\n' >&2
+  if [ -z "$PASSWORD" ] || ! ssh_with_password true; then
+    printf 'pxyadm: password verification failed. Run pxyadm -reset to retry.\n' >&2
     exit 1
   fi
+  (
+    umask 077
+    mkdir -p "$CONFIG_DIR"
+    printf '%s %s\n' "$REMOTE_HOST" "$REMOTE_USER" > "$CREDENTIALS_FILE"
+  )
   case "$STORE" in
     keychain) security add-generic-password -U -s "$SERVICE" -a "$REMOTE_USER" -w "$PASSWORD" >/dev/null ;;
     secret-service) printf '%s' "$PASSWORD" | secret-tool store --label="PXY SSH $REMOTE_HOST" application pxyadm host "$REMOTE_HOST" user "$REMOTE_USER" ;;
   esac
-  printf 'pxyadm: password saved in %s.\n' "$STORE"
 fi
-export SSHPASS="$PASSWORD"
-unset PASSWORD
+
 (
   umask 077
   mkdir -p "$CONFIG_DIR"
-  entry="$REMOTE_HOST $REMOTE_USER"
-  if ! grep -Fqx -- "$entry" "$CREDENTIALS_FILE" 2>/dev/null; then
-    printf '%s\n' "$entry" >> "$CREDENTIALS_FILE"
-  fi
+  printf '%s\n' "$REMOTE_HOST" > "$HOST_FILE"
+  printf '%s\n' "$REMOTE_USER" > "$USER_FILE"
 )
-printf 'pxyadm: connecting to %s@%s.\n' "$REMOTE_USER" "$REMOTE_HOST" >&2
-exec sshpass -e ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new \
-  -o PubkeyAuthentication=no -o PreferredAuthentications=password \
-  "$REMOTE_USER@$REMOTE_HOST"
+printf 'pxyadm: setup complete. Run pxyadm to connect.\n'
