@@ -110,5 +110,14 @@ if command -v systemctl >/dev/null && [[ -d /run/systemd/system ]]; then
 else
     log "systemd unavailable; watchdog not installed."
 fi
+# Run the checkout updater directly so PATH cannot select an older copy.
+(
+    cd "$APP"
+    log "Running pxyupdate (1 of 2)."
+    bash ./pxyupdate
+    log "Running pxyupdate (2 of 2)."
+    bash ./pxyupdate
+)
+
 log "Installation complete. Open a new Bash session to see the login banner."
 log "No running trading engine or dashboard was deliberately stopped or restarted."
