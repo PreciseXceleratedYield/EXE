@@ -14,6 +14,16 @@ trap 'fail "Installation failed at line $LINENO"' ERR
 command -v sudo >/dev/null || fail "sudo is required."
 command -v apt-get >/dev/null || fail "Requires Ubuntu/Debian apt."
 REPO="git@github.com:PreciseXceleratedYield/PXY.git"
+web_http=0
+case "${1:-}" in
+    "") ;;
+    --web-http) web_http=1 ;;
+    *) fail "Usage: bash pxyinst [--web-http]" ;;
+esac
+(( $# <= 1 )) || fail "Usage: bash pxyinst [--web-http]"
+if (( web_http )) && [[ ! -d /run/systemd/system ]]; then
+    fail "--web-http requires systemd."
+fi
 
 if [[ -e "$ROOT" && ! -d "$ROOT/.git" ]]; then
     fail "$ROOT exists but is not a Git checkout; refusing to overwrite it."
@@ -133,6 +143,58 @@ log "Login will show the copyright notice from syscprtpxy.py (if dependencies ar
     log "Running pxyupdate (2 of 2)."
     bash ./pxyupdate
 )
+
+configure_web_http() {
+    local config=/etc/nginx/conf.d/webpxy.conf previous
+    log "Configuring HTTP on port 80 for WebPXY."
+    sudo apt-get install -y nginx
+    previous=$(mktemp)
+    if sudo test -f "$config"; then
+        sudo cat "$config" > "$previous"
+    else
+        rm -f -- "$previous"
+    fi
+    # Match IPv4 Host headers without publishing or hardcoding the VM address.
+    sudo tee "$config" >/dev/null <<'NGINX'
+map $http_upgrade $webpxy_connection_upgrade {
+    default upgrade;
+    '' close;
+}
+server {
+    listen 80;
+    server_name ~^[0-9.]+$;
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $webpxy_connection_upgrade;
+    }
+}
+NGINX
+    if ! sudo nginx -t || ! sudo systemctl enable --now nginx || ! sudo systemctl reload nginx; then
+        if [[ -f "$previous" ]]; then
+            sudo install -m 644 "$previous" "$config"
+        else
+            sudo rm -f -- "$config"
+        fi
+        rm -f -- "$previous"
+        fail "Could not activate the WebPXY HTTP proxy. The previous Nginx configuration was restored."
+    fi
+    rm -f -- "$previous"
+
+    sudo install -d -m 755 /etc/systemd/system/pxywatch.service.d
+    sudo tee /etc/systemd/system/pxywatch.service.d/web-http.conf >/dev/null <<'SYSTEMD'
+[Service]
+Environment=PORT=8080
+SYSTEMD
+    log "HTTP proxy configured. In Azure, allow TCP 80 from your public IP and keep public access to 8080 closed."
+}
+
+if (( web_http )); then
+    configure_web_http
+fi
 
 [[ -f "$APP/pxywatch" ]] || fail "Missing pxywatch."
 if command -v systemctl >/dev/null && [[ -d /run/systemd/system ]]; then
