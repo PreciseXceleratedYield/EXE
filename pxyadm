@@ -1,5 +1,7 @@
 #!/bin/sh
 # PXY self-updating cross-platform SSH launcher.
+# PXYADM_RELEASE=1
+# Increase PXYADM_RELEASE whenever a new launcher is published.
 set -eu
 
 SELF=$0
@@ -84,11 +86,14 @@ if [ "${PXYADM_UPDATED:-0}" != 1 ]; then
   printf 'pxyadm: checking for updates (up to 15 seconds).\n' >&2
   TMP=$(mktemp "${TMPDIR:-/tmp}/pxyadm.XXXXXXXX") || TMP=
   if [ -n "$TMP" ]; then
+    current_release=$(sed -n 's/^# PXYADM_RELEASE=\([1-9][0-9]*\)$/\1/p' "$SELF")
     if download_launcher >"$TMP" 2>/dev/null \
       && [ -s "$TMP" ] \
       && [ "$(head -n 1 "$TMP")" = '#!/bin/sh' ] \
       && grep -q '^# PXY self-updating cross-platform SSH launcher\.' "$TMP" \
-      && ! cmp -s "$TMP" "$SELF"; then
+      && next_release=$(sed -n 's/^# PXYADM_RELEASE=\([1-9][0-9]*\)$/\1/p' "$TMP") \
+      && [ "$next_release" -gt "$current_release" ] 2>/dev/null \
+      && sh -n "$TMP"; then
       chmod 755 "$TMP"
       if mv -f "$TMP" "$SELF"; then
         printf 'pxyadm: updated from GitHub main.\n'
