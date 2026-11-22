@@ -1,6 +1,6 @@
 #!/bin/sh
 # PXY self-updating cross-platform SSH launcher.
-# PXYADM_RELEASE=1
+# PXYADM_RELEASE=2
 # Increase PXYADM_RELEASE whenever a new launcher is published.
 set -eu
 
@@ -32,6 +32,52 @@ if [ "$SELF" != "$TARGET" ]; then
       ;;
   esac
   exec "$TARGET" "$@"
+fi
+
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/pxyadm"
+HOST_FILE="$CONFIG_DIR/host"
+CREDENTIALS_FILE="$CONFIG_DIR/credentials"
+
+remove_saved_password() (
+  saved_host=$1
+  saved_user=$2
+  [ -n "$saved_host" ] && [ -n "$saved_user" ] || return 0
+  case "$(uname -s)" in
+    Darwin)
+      security delete-generic-password -s "PXY-SSH-$saved_host" -a "$saved_user" >/dev/null 2>&1 ||
+        [ "$?" -eq 44 ]  # Keychain item already absent.
+      ;;
+    Linux)
+      if ! command -v secret-tool >/dev/null 2>&1; then
+        [ ! -s "$CREDENTIALS_FILE" ]
+        return
+      fi
+      if secret-tool lookup application pxyadm host "$saved_host" user "$saved_user" >/dev/null; then
+        secret-tool clear application pxyadm host "$saved_host" user "$saved_user"
+      fi
+      ;;
+  esac
+)
+
+if [ "${1:-}" = "-reset" ] || [ "${1:-}" = "--reset" ]; then
+  reset_failed=0
+  if [ -r "$CREDENTIALS_FILE" ]; then
+    while IFS=' ' read -r saved_host saved_user; do
+      remove_saved_password "$saved_host" "$saved_user" || reset_failed=1
+    done < "$CREDENTIALS_FILE"
+  fi
+  if [ -r "$HOST_FILE" ]; then
+    IFS= read -r saved_host < "$HOST_FILE" || :
+    remove_saved_password "$saved_host" "${PXY_SSH_USER:-pxy}" || reset_failed=1
+  fi
+  remove_saved_password "${PXY_SSH_HOST:-}" "${PXY_SSH_USER:-pxy}" || reset_failed=1
+  if [ "$reset_failed" -ne 0 ]; then
+    printf 'pxyadm: could not clear every saved password. Unlock the credential vault and retry.\n' >&2
+    exit 1
+  fi
+  rm -rf -- "$CONFIG_DIR"
+  printf 'pxyadm: local settings and launcher backups cleared. Run pxyadm to set up again.\n'
+  exit 0
 fi
 
 # Archive old launcher copies only where this user can write.
@@ -122,8 +168,6 @@ if [ "$(uname -s)" = Linux ] && [ "$(id -un)" = pxy ]; then
   fi
 fi
 
-CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/pxyadm"
-HOST_FILE="$CONFIG_DIR/host"
 REMOTE_HOST=${PXY_SSH_HOST:-}
 if [ -z "$REMOTE_HOST" ] && [ -r "$HOST_FILE" ]; then
   IFS= read -r REMOTE_HOST < "$HOST_FILE" || :
@@ -225,6 +269,14 @@ if [ -z "$PASSWORD" ]; then
 fi
 export SSHPASS="$PASSWORD"
 unset PASSWORD
+(
+  umask 077
+  mkdir -p "$CONFIG_DIR"
+  entry="$REMOTE_HOST $REMOTE_USER"
+  if ! grep -Fqx -- "$entry" "$CREDENTIALS_FILE" 2>/dev/null; then
+    printf '%s\n' "$entry" >> "$CREDENTIALS_FILE"
+  fi
+)
 printf 'pxyadm: connecting to %s@%s.\n' "$REMOTE_USER" "$REMOTE_HOST" >&2
 exec sshpass -e ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new \
   -o PubkeyAuthentication=no -o PreferredAuthentications=password \
