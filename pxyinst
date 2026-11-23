@@ -65,7 +65,27 @@ if ! probe="$(GIT_SSH_COMMAND="$ssh_command" git ls-remote --exit-code "$REPO" H
         log "Add this public key as a read-only deploy key:"
         log "https://github.com/PreciseXceleratedYield/PXY/settings/keys"
         cat "$key.pub"
-        fail "After approving the deploy key on GitHub, rerun this installer."
+        [[ -t 0 ]] || fail "Approve the deploy key, then rerun the installer in a terminal."
+        while true; do
+            if ! read -r -p "[PXY] Have you added the deploy key on GitHub? [yes/no] " answer; then
+                fail "No response. Approve the deploy key and rerun the installer."
+            fi
+            case "${answer,,}" in
+                y|yes)
+                    if probe="$(GIT_SSH_COMMAND="$ssh_command" git ls-remote --exit-code "$REPO" HEAD 2>&1)"; then
+                        log "GitHub access verified. Continuing installation."
+                        break
+                    fi
+                    log "GitHub access is still unavailable: $probe"
+                    log "Check that you added the public key to the PXY repository."
+                    ;;
+                n|no)
+                    log "Installation stopped. Rerun it after approving the deploy key."
+                    exit 1
+                    ;;
+                *) log "Please enter yes or no." ;;
+            esac
+        done
     fi
     clone_config=(--config "core.sshCommand=$ssh_command")
 fi
