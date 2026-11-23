@@ -185,6 +185,14 @@ server {
     listen 80;
     server_name ~^[0-9.]+$;
 
+    error_page 502 504 =503 @webpxy_unavailable;
+
+    location @webpxy_unavailable {
+        default_type text/html;
+        add_header Cache-Control "no-store" always;
+        return 503 '<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>WebPXY unavailable</title><main><h1>WebPXY is offline</h1><p>The dashboard is stopped or temporarily unavailable. Refresh after it starts again.</p></main></html>';
+    }
+
     location / {
         proxy_pass http://127.0.0.1:8080;
         proxy_http_version 1.1;
