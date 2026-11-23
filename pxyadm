@@ -1,304 +1,131 @@
-#!/bin/sh
-# PXY self-updating cross-platform SSH launcher.
-# PXYADM_RELEASE=4
-# Increase PXYADM_RELEASE whenever a new launcher is published.
-set -eu
+#!/usr/bin/env bash
+# PXYADM: one saved SSH destination, passwordless login via dedicated SSH key.
+set -u
+umask 077
+# Install downloaded launcher into the user PATH on first -reset invocation.
+if [ "${1:-}" = "-reset" ] && [ "${PXYADM_INSTALLED:-0}" != 1 ]; then
+    target="$HOME/.local/bin/pxyadm"
+    mkdir -p "$HOME/.local/bin" || exit 1
+    current="$(cd "$(dirname "$0")" 2>/dev/null && pwd -P)/$(basename "$0")"
+    if [ "$current" != "$target" ]; then
+        cp "$current" "$target" || exit 1
+        chmod 700 "$target" || exit 1
+        if [ "$(uname -s)" = "Darwin" ]; then
+            line='export PATH="$HOME/.local/bin:$PATH"'
+            grep -Fqx "$line" "$HOME/.zshrc" 2>/dev/null || printf '\n%s\n' "$line" >> "$HOME/.zshrc"
+        fi
+        echo "PXYADM installed: $target"
+        PXYADM_INSTALLED=1 exec bash "$target" -reset
+    fi
+fi
+
+CONFIG_DIR="$HOME/.config/pxyadm"
+CONFIG_FILE="$CONFIG_DIR/connection"
+KEY_FILE="$CONFIG_DIR/id_ed25519"
+
+detect_platform() {
+    case "$(uname -s)" in
+        Darwin) echo "macOS" ;;
+        Linux)
+            if [ -d /proc/ish ] || { [ -r /proc/version ] && grep -qi ish /proc/version; }; then
+                echo "iSH"
+            else
+                echo "Linux"
+            fi ;;
+        *) echo "Unsupported"; return 1 ;;
+    esac
+}
+
+reset_pxyadm() {
+    local path answer
+    local -a paths=()
+    echo "PXYADM reset on $(detect_platform)" || return 1
+    for path in "$HOME/.config/pxyadm" "$HOME/.cache/pxyadm" \
+                "$HOME/.local/share/pxyadm" "$HOME/.local/state/pxyadm" \
+                "$HOME/.pxyadm"; do
+        if [ -L "$path" ]; then
+            echo "Skipping symbolic link: $path"
+        elif [ -e "$path" ]; then
+            paths+=("$path")
+        fi
+    done
+    if [ "${#paths[@]}" -eq 0 ]; then
+        echo "No known PXYADM-owned storage found. Nothing deleted."
+        return 0
+    fi
+    printf 'PXYADM paths to delete:\n'
+    printf '  %s\n' "${paths[@]}"
+    echo "WARNING: This deletes the dedicated local SSH key. Its authorized_keys entry on the remote server is NOT removed."
+    read -r -p "Type RESET PXYADM to confirm: " answer || return 1
+    [ "$answer" = "RESET PXYADM" ] || { echo "Reset cancelled."; return 1; }
+    for path in "${paths[@]}"; do
+        [ ! -L "$path" ] || continue
+        rm -rf -- "$path" || return 1
+        echo "Removed: $path"
+    done
+    echo "PXYADM local reset complete."
+}
 
 case "${1:-}" in
-  '') reset=0 ;;
-  -reset|--reset) reset=1 ;;
-  *) printf 'Usage: pxyadm [-reset]\n' >&2; exit 2 ;;
+    -reset)
+        [ "$#" -eq 1 ] || { echo "Usage: pxyadm [-reset]" >&2; exit 2; }
+        reset_pxyadm; exit $? ;;
+    "")
+        [ "$#" -eq 0 ] || exit 2 ;;
+    *) echo "Usage: pxyadm [-reset]" >&2; exit 2 ;;
 esac
-[ "$#" -le 1 ] || { printf 'Usage: pxyadm [-reset]\n' >&2; exit 2; }
 
-SELF=$0
-case "$SELF" in
-  /*) ;;
-  *) SELF=$(command -v "$SELF" 2>/dev/null || printf '%s' "$SELF") ;;
-esac
-SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$SELF")" && pwd -P)
-SELF="$SELF_DIR/$(basename -- "$SELF")"
-USER_BIN="$HOME/.local/bin"
-if [ "$reset" -eq 1 ]; then
-  mkdir -p "$USER_BIN"
-  USER_BIN=$(CDPATH= cd -- "$USER_BIN" && pwd -P)
-fi
-TARGET="$USER_BIN/pxyadm"
-
-# Download-and-run bootstrap: install to a user-owned directory, never sudo.
-if [ "$reset" -eq 1 ] && [ "$SELF" != "$TARGET" ]; then
-  if [ ! -f "$TARGET" ] || ! cmp -s "$SELF" "$TARGET"; then
-    install -m 755 "$SELF" "$TARGET"
-    printf 'pxyadm: installed in %s (no sudo).\n' "$TARGET"
-  fi
-  # Make the user-owned launcher first in PATH for future zsh sessions.
-  case "$(uname -s)" in
-    Darwin)
-      PROFILE="$HOME/.zshrc"
-      PATH_LINE='export PATH="$HOME/.local/bin:$PATH"'
-      if [ ! -f "$PROFILE" ] || ! grep -Fqx "$PATH_LINE" "$PROFILE"; then
-        printf '\n%s\n' "$PATH_LINE" >> "$PROFILE"
-      fi
-      ;;
-  esac
-  exec "$TARGET" "$@"
-fi
-
-CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/pxyadm"
-HOST_FILE="$CONFIG_DIR/host"
-USER_FILE="$CONFIG_DIR/user"
-CREDENTIALS_FILE="$CONFIG_DIR/credentials"
-
-remove_saved_password() (
-  saved_host=$1
-  saved_user=$2
-  [ -n "$saved_host" ] && [ -n "$saved_user" ] || return 0
-  case "$(uname -s)" in
-    Darwin)
-      security delete-generic-password -s "PXY-SSH-$saved_host" -a "$saved_user" >/dev/null 2>&1 ||
-        [ "$?" -eq 44 ]  # Keychain item already absent.
-      ;;
-    Linux)
-      if ! command -v secret-tool >/dev/null 2>&1; then
-        [ ! -s "$CREDENTIALS_FILE" ]
-        return
-      fi
-      if secret-tool lookup application pxyadm host "$saved_host" user "$saved_user" >/dev/null; then
-        secret-tool clear application pxyadm host "$saved_host" user "$saved_user"
-      fi
-      ;;
-  esac
-)
-
-reset_local_settings() {
-  reset_failed=0
-  if [ -r "$CREDENTIALS_FILE" ]; then
-    while IFS=' ' read -r saved_host saved_user; do
-      remove_saved_password "$saved_host" "$saved_user" || reset_failed=1
-    done < "$CREDENTIALS_FILE"
-  fi
-  if [ -r "$HOST_FILE" ]; then
-    IFS= read -r saved_host < "$HOST_FILE" || :
-    remove_saved_password "$saved_host" "${PXY_SSH_USER:-pxy}" || reset_failed=1
-  fi
-  remove_saved_password "${PXY_SSH_HOST:-}" "${PXY_SSH_USER:-pxy}" || reset_failed=1
-  if [ "$reset_failed" -ne 0 ]; then
-    printf 'pxyadm: could not clear every saved password. Unlock the credential vault and retry.\n' >&2
-    exit 1
-  fi
-  rm -rf -- "$CONFIG_DIR"
+platform=$(detect_platform) || { echo "Unsupported platform." >&2; exit 1; }
+command -v ssh >/dev/null && command -v ssh-keygen >/dev/null || {
+    echo "OpenSSH client and ssh-keygen required on $platform." >&2; exit 1;
 }
 
-# Archive old launcher copies only where this user can write.
-archive_path_launchers() (
-  umask 077
-  backup_dir=
-  remaining_path="${PATH:-}:$HOME/bin:/usr/local/bin:/usr/bin"
-  while [ -n "$remaining_path" ]; do
-    case "$remaining_path" in
-      *:*) directory=${remaining_path%%:*}; remaining_path=${remaining_path#*:} ;;
-      *) directory=$remaining_path; remaining_path= ;;
-    esac
-    directory=$(CDPATH= cd -- "${directory:-.}" 2>/dev/null && pwd -P) || continue
-    candidate="$directory/pxyadm"
-    [ -f "$candidate" ] && [ -w "$directory" ] || continue
-    [ "$candidate" != "$SELF" ] && [ ! "$candidate" -ef "$SELF" ] || continue
-    [ "$candidate" != "$HOME/PXY/pxy/pxyadm" ] && [ ! "$candidate" -ef "$HOME/PXY/pxy/pxyadm" ] || continue
-    if ! grep -q '^# PXY self-updating cross-platform SSH launcher\.' "$candidate" 2>/dev/null; then
-      grep -Eq 'PreciseXceleratedYield/(PXY|EXE)|^[[:space:]]*BHANU_IP=' "$candidate" 2>/dev/null &&
-        grep -Eq 'sshpass|(^|[[:space:]])ssh[[:space:]]' "$candidate" 2>/dev/null || continue
+if [ -L "$CONFIG_DIR" ] || [ -L "$CONFIG_FILE" ] || [ -L "$KEY_FILE" ]; then
+    echo "Refusing symlinked PXYADM configuration or key paths." >&2; exit 1
+fi
+
+if [ ! -f "$CONFIG_FILE" ]; then
+    echo "First-time PXYADM setup ($platform). One server only."
+    read -r -p "Server IP or hostname: " SERVER || exit 1
+    read -r -p "SSH username [pxy]: " USERNAME || exit 1
+    USERNAME="${USERNAME:-pxy}"
+    # Avoid shell metacharacters, options, whitespace and SSH config injection.
+    [[ "$SERVER" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]*$ ]] && [[ "$SERVER" != *:* ]] || {
+        echo "Invalid hostname or IPv4 address." >&2; exit 1;
+    }
+    [[ "$USERNAME" =~ ^[A-Za-z_][A-Za-z0-9_.-]*$ ]] || {
+        echo "Invalid SSH username." >&2; exit 1;
+    }
+    mkdir -p -- "$CONFIG_DIR" || exit 1
+    chmod 700 "$CONFIG_DIR"
+    if [ ! -f "$KEY_FILE" ]; then
+        ssh-keygen -q -t ed25519 -N "" -f "$KEY_FILE" -C "pxyadm" || exit 1
     fi
-    if [ -z "$backup_dir" ]; then
-      backup_root="${XDG_CONFIG_HOME:-$HOME/.config}/pxyadm/backups"
-      mkdir -p "$backup_root" || return
-      backup_dir=$(mktemp -d "$backup_root/run.XXXXXXXX") || return
-    fi
-    destination=$(mktemp "$backup_dir/pxyadm.XXXXXXXX") || continue
-    if mv -f "$candidate" "$destination"; then
-      printf 'pxyadm: backed up %s to %s\n' "$candidate" "$destination"
+    echo "Authorize the dedicated key on $USERNAME@$SERVER (SSH may ask for the server password once)."
+    # No password is stored. ssh-copy-id handles safe authorized_keys installation.
+    if command -v ssh-copy-id >/dev/null; then
+        ssh-copy-id -i "$KEY_FILE.pub" -o StrictHostKeyChecking=accept-new -- "$USERNAME@$SERVER" || exit 1
     else
-      rm -f "$destination"
+        echo "ssh-copy-id is missing. Install it, or manually append this public key to ~/.ssh/authorized_keys on the server:" >&2
+        cat "$KEY_FILE.pub"
+        echo "Then rerun pxyadm to finish setup." >&2
+        exit 1
     fi
-  done
-)
-
-
-
-download_launcher() {
-  url="https://raw.githubusercontent.com/PreciseXceleratedYield/EXE/main/pxyadm"
-  if command -v curl >/dev/null 2>&1; then
-    curl -fsSL --connect-timeout 5 --max-time 15 "$url"
-  elif command -v wget >/dev/null 2>&1; then
-    wget -q -T 15 -O - "$url"
-  else
-    return 1
-  fi
-}
-
-# Check for launcher updates only while reconfiguring.
-if [ "$reset" -eq 1 ] && [ "${PXYADM_UPDATED:-0}" != 1 ]; then
-  printf 'pxyadm: checking for updates (up to 15 seconds).\n' >&2
-  TMP=$(mktemp "${TMPDIR:-/tmp}/pxyadm.XXXXXXXX") || TMP=
-  if [ -n "$TMP" ]; then
-    current_release=$(sed -n 's/^# PXYADM_RELEASE=\([1-9][0-9]*\)$/\1/p' "$SELF")
-    if download_launcher >"$TMP" 2>/dev/null \
-      && [ -s "$TMP" ] \
-      && [ "$(head -n 1 "$TMP")" = '#!/bin/sh' ] \
-      && grep -q '^# PXY self-updating cross-platform SSH launcher\.' "$TMP" \
-      && next_release=$(sed -n 's/^# PXYADM_RELEASE=\([1-9][0-9]*\)$/\1/p' "$TMP") \
-      && [ "$next_release" -gt "$current_release" ] 2>/dev/null \
-      && sh -n "$TMP"; then
-      chmod 755 "$TMP"
-      if mv -f "$TMP" "$SELF"; then
-        printf 'pxyadm: updated from GitHub main.\n'
-        PXYADM_UPDATED=1
-        export PXYADM_UPDATED
-        exec "$SELF" "$@"
-      fi
+    if ! ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes -i "$KEY_FILE" -- "$USERNAME@$SERVER" true; then
+        echo "Key login verification failed; configuration not saved." >&2
+        exit 1
     fi
-    [ ! -f "$TMP" ] || rm -f "$TMP"
-  fi
+    printf '%s\n%s\n' "$SERVER" "$USERNAME" > "$CONFIG_FILE"
+    chmod 600 "$CONFIG_FILE"
 fi
 
-if ! command -v ssh >/dev/null 2>&1; then
-  printf 'pxyadm: SSH client not found.\n' >&2
-  exit 1
-fi
-
-REMOTE_USER=${PXY_SSH_USER:-pxy}
-if [ "$reset" -eq 0 ] && [ -r "$USER_FILE" ]; then
-  IFS= read -r REMOTE_USER < "$USER_FILE" || :
-fi
-
-if [ "$reset" -eq 1 ]; then
-  archive_path_launchers || printf 'pxyadm: could not move all old launchers.\n' >&2
-  reset_local_settings
-  printf 'PXY server IP or SSH host alias: ' >&2
-  IFS= read -r REMOTE_HOST || exit 1
-elif [ -r "$HOST_FILE" ]; then
-  IFS= read -r REMOTE_HOST < "$HOST_FILE" || :
-else
-  printf 'pxyadm: no saved host. Run pxyadm -reset to set up.\n' >&2
-  exit 1
-fi
-
-case "$REMOTE_HOST" in
-  ''|-*|*[!a-zA-Z0-9._:%-]*)
-    printf 'pxyadm: enter a valid server IP or SSH host alias.\n' >&2
-    exit 1
-    ;;
-esac
-
-repair_changed_host_key() (
-  # Query the host without sending credentials or changing SSH trust.
-  probe=$(LC_ALL=C ssh -o ConnectTimeout=10 -o BatchMode=yes \
-    -o PreferredAuthentications=none -o StrictHostKeyChecking=yes \
-    "$REMOTE_USER@$REMOTE_HOST" true 2>&1) || :
-  case "$probe" in
-    *"REMOTE HOST IDENTIFICATION HAS CHANGED"*) ;;
-    *) return 0 ;;
-  esac
-
-  command -v ssh-keyscan >/dev/null && command -v ssh-keygen >/dev/null || return 1
-  known_hosts="$HOME/.ssh/known_hosts"
-  [ -f "$known_hosts" ] || return 1
-  printf '%s\n' 'Verify the VM ED25519 fingerprint in the Azure console:' \
-    'ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub' >&2
-  printf 'Verified SHA256 fingerprint: ' >&2
-  IFS= read -r expected || return 1
-  case "$expected" in SHA256:?*) ;; *) return 1 ;; esac
-
-  umask 077
-  work=$(mktemp -d "$HOME/.ssh/pxyadm-host.XXXXXXXX") || return 1
-  trap 'rm -rf -- "$work"' EXIT
-  ssh-keyscan -T 5 -t ed25519 "$REMOTE_HOST" >"$work/scanned" 2>/dev/null || return 1
-  awk -v host="$REMOTE_HOST" '$1 == host && $2 == "ssh-ed25519" {print; exit}' \
-    "$work/scanned" >"$work/key" || return 1
-  fingerprint=$(ssh-keygen -lf "$work/key") || return 1
-  actual=$(printf '%s\n' "$fingerprint" | awk 'NR == 1 {print $2}')
-  if [ "$expected" != "$actual" ]; then
-    printf 'pxyadm: SSH fingerprint mismatch.\n' >&2
-    return 1
-  fi
-
-  cp "$known_hosts" "$work/known_hosts" || return 1
-  ssh-keygen -R "$REMOTE_HOST" -f "$work/known_hosts" >/dev/null || return 1
-  printf '\n' >>"$work/known_hosts" || return 1
-  cat "$work/key" >>"$work/known_hosts" || return 1
-  mv -f "$work/known_hosts" "$known_hosts"
-)
-
-if [ "$reset" -eq 1 ] && ! repair_changed_host_key; then
-  printf 'pxyadm: could not verify and replace the SSH host key.\n' >&2
-  exit 1
-fi
-
-SERVICE="PXY-SSH-$REMOTE_HOST"
-STORE=none
-if command -v sshpass >/dev/null 2>&1; then
-  case "$(uname -s)" in
-    Darwin) if command -v security >/dev/null 2>&1; then STORE=keychain; fi ;;
-    Linux) if command -v secret-tool >/dev/null 2>&1; then STORE=secret-service; fi ;;
-  esac
-fi
-
-get_saved_password() {
-  case "$STORE" in
-    keychain) security find-generic-password -s "$SERVICE" -a "$REMOTE_USER" -w 2>/dev/null ;;
-    secret-service) secret-tool lookup application pxyadm host "$REMOTE_HOST" user "$REMOTE_USER" 2>/dev/null ;;
-  esac
+[ -f "$KEY_FILE" ] && [ -f "$CONFIG_FILE" ] || {
+    echo "Missing PXYADM key/configuration. Run pxyadm -reset and set up again." >&2; exit 1;
 }
-
-ssh_with_password() {
-  SSHPASS="$PASSWORD" sshpass -e ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new \
-    -o PubkeyAuthentication=no -o PreferredAuthentications=password -o NumberOfPasswordPrompts=1 \
-    "$REMOTE_USER@$REMOTE_HOST" "$@"
+SERVER=$(sed -n '1p' "$CONFIG_FILE")
+USERNAME=$(sed -n '2p' "$CONFIG_FILE")
+[[ "$SERVER" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] && [[ "$USERNAME" =~ ^[A-Za-z_][A-Za-z0-9_.-]*$ ]] || {
+    echo "Invalid PXYADM connection settings." >&2; exit 1;
 }
-
-if [ "$reset" -eq 0 ]; then
-  printf 'pxyadm: connecting to %s@%s.\n' "$REMOTE_USER" "$REMOTE_HOST" >&2
-  if [ "$STORE" = none ]; then
-    exec ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "$REMOTE_USER@$REMOTE_HOST"
-  fi
-  PASSWORD=$(get_saved_password) || PASSWORD=
-  if [ -z "$PASSWORD" ]; then
-    printf 'pxyadm: no saved password. Run pxyadm -reset to set up.\n' >&2
-    exit 1
-  fi
-  ssh_with_password
-  exit 0
-fi
-
-if [ "$STORE" = none ]; then
-  printf 'pxyadm: SSH will verify your login. A supported credential vault and sshpass are required to save a password.\n' >&2
-  ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "$REMOTE_USER@$REMOTE_HOST" true ||
-    { printf 'pxyadm: login verification failed. Run pxyadm -reset to retry.\n' >&2; exit 1; }
-else
-  printf 'PXY Linux password: ' >&2
-  STTY_STATE=$(stty -g 2>/dev/null || :)
-  stty -echo 2>/dev/null || :
-  IFS= read -r PASSWORD || PASSWORD=
-  if [ -n "$STTY_STATE" ]; then stty "$STTY_STATE" 2>/dev/null || :; fi
-  printf '\n' >&2
-  if [ -z "$PASSWORD" ] || ! ssh_with_password true; then
-    printf 'pxyadm: password verification failed. Run pxyadm -reset to retry.\n' >&2
-    exit 1
-  fi
-  (
-    umask 077
-    mkdir -p "$CONFIG_DIR"
-    printf '%s %s\n' "$REMOTE_HOST" "$REMOTE_USER" > "$CREDENTIALS_FILE"
-  )
-  case "$STORE" in
-    keychain) security add-generic-password -U -s "$SERVICE" -a "$REMOTE_USER" -w "$PASSWORD" >/dev/null ;;
-    secret-service) printf '%s' "$PASSWORD" | secret-tool store --label="PXY SSH $REMOTE_HOST" application pxyadm host "$REMOTE_HOST" user "$REMOTE_USER" ;;
-  esac
-fi
-
-(
-  umask 077
-  mkdir -p "$CONFIG_DIR"
-  printf '%s\n' "$REMOTE_HOST" > "$HOST_FILE"
-  printf '%s\n' "$REMOTE_USER" > "$USER_FILE"
-)
-printf 'pxyadm: setup complete. Run pxyadm to connect.\n'
+echo "Connecting to $USERNAME@$SERVER..."
+exec ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes -i "$KEY_FILE" -- "$USERNAME@$SERVER"
