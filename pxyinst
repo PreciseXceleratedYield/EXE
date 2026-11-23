@@ -14,15 +14,16 @@ trap 'fail "Installation failed at line $LINENO"' ERR
 command -v sudo >/dev/null || fail "sudo is required."
 command -v apt-get >/dev/null || fail "Requires Ubuntu/Debian apt."
 REPO="git@github.com:PreciseXceleratedYield/PXY.git"
-web_http=0
+web_http=1
 case "${1:-}" in
     "") ;;
     --web-http) web_http=1 ;;
-    *) fail "Usage: bash pxyinst [--web-http]" ;;
+    --no-web-http) web_http=0 ;;
+    *) fail "Usage: bash pxyinst [--web-http|--no-web-http]" ;;
 esac
-(( $# <= 1 )) || fail "Usage: bash pxyinst [--web-http]"
+(( $# <= 1 )) || fail "Usage: bash pxyinst [--web-http|--no-web-http]"
 if (( web_http )) && [[ ! -d /run/systemd/system ]]; then
-    fail "--web-http requires systemd."
+    fail "HTTP proxy setup requires systemd. Use --no-web-http to skip it."
 fi
 
 if [[ -e "$ROOT" && ! -d "$ROOT/.git" ]]; then
@@ -167,7 +168,7 @@ log "Login will show the copyright notice from syscprtpxy.py (if dependencies ar
 configure_web_http() {
     local config=/etc/nginx/conf.d/webpxy.conf previous
     log "Configuring HTTP on port 80 for WebPXY."
-    sudo apt-get install -y nginx
+    sudo apt-get install -y nginx curl
     previous=$(mktemp)
     if sudo test -f "$config"; then
         sudo cat "$config" > "$previous"
@@ -228,6 +229,23 @@ if command -v systemctl >/dev/null && [[ -d /run/systemd/system ]]; then
     fi
 else
     log "systemd unavailable; watchdog not installed."
+fi
+
+verify_web_http() {
+    local attempt
+    log "Waiting for WebPXY to answer through Nginx on port 80."
+    for (( attempt=1; attempt<=15; attempt++ )); do
+        if curl -fsS --max-time 3 -o /dev/null http://127.0.0.1/web/webpxy.html; then
+            log "WebPXY is responding over HTTP on port 80."
+            return 0
+        fi
+        if (( attempt < 15 )); then sleep 5; fi
+    done
+    fail "WebPXY did not respond through Nginx. Check pxywatch status and ~/.pxy/watchdog/pxy-web-current.out."
+}
+
+if (( web_http )); then
+    verify_web_http
 fi
 
 log "Installation complete. Open a new Bash session to see the login banner."
