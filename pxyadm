@@ -37,7 +37,7 @@ detect_platform() {
 }
 
 reset_pxyadm() {
-    local path answer
+    local path
     local -a paths=()
     echo "PXYADM reset on $(detect_platform)" || return 1
     for path in "$HOME/.config/pxyadm" "$HOME/.cache/pxyadm" \
@@ -56,8 +56,6 @@ reset_pxyadm() {
     printf 'PXYADM paths to delete:\n'
     printf '  %s\n' "${paths[@]}"
     echo "WARNING: This deletes the dedicated local SSH key. Its authorized_keys entry on the remote server is NOT removed."
-    read -r -p "Type RESET PXYADM to confirm: " answer || return 1
-    [ "$answer" = "RESET PXYADM" ] || { echo "Reset cancelled."; return 1; }
     for path in "${paths[@]}"; do
         [ ! -L "$path" ] || continue
         rm -rf -- "$path" || return 1
