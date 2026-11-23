@@ -1,6 +1,6 @@
 #!/bin/sh
 # PXY self-updating cross-platform SSH launcher.
-# PXYADM_RELEASE=3
+# PXYADM_RELEASE=4
 # Increase PXYADM_RELEASE whenever a new launcher is published.
 set -eu
 
@@ -188,6 +188,50 @@ case "$REMOTE_HOST" in
     exit 1
     ;;
 esac
+
+repair_changed_host_key() (
+  # Query the host without sending credentials or changing SSH trust.
+  probe=$(LC_ALL=C ssh -o ConnectTimeout=10 -o BatchMode=yes \
+    -o PreferredAuthentications=none -o StrictHostKeyChecking=yes \
+    "$REMOTE_USER@$REMOTE_HOST" true 2>&1) || :
+  case "$probe" in
+    *"REMOTE HOST IDENTIFICATION HAS CHANGED"*) ;;
+    *) return 0 ;;
+  esac
+
+  command -v ssh-keyscan >/dev/null && command -v ssh-keygen >/dev/null || return 1
+  known_hosts="$HOME/.ssh/known_hosts"
+  [ -f "$known_hosts" ] || return 1
+  printf '%s\n' 'Verify the VM ED25519 fingerprint in the Azure console:' \
+    'ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub' >&2
+  printf 'Verified SHA256 fingerprint: ' >&2
+  IFS= read -r expected || return 1
+  case "$expected" in SHA256:?*) ;; *) return 1 ;; esac
+
+  umask 077
+  work=$(mktemp -d "$HOME/.ssh/pxyadm-host.XXXXXXXX") || return 1
+  trap 'rm -rf -- "$work"' EXIT
+  ssh-keyscan -T 5 -t ed25519 "$REMOTE_HOST" >"$work/scanned" 2>/dev/null || return 1
+  awk -v host="$REMOTE_HOST" '$1 == host && $2 == "ssh-ed25519" {print; exit}' \
+    "$work/scanned" >"$work/key" || return 1
+  fingerprint=$(ssh-keygen -lf "$work/key") || return 1
+  actual=$(printf '%s\n' "$fingerprint" | awk 'NR == 1 {print $2}')
+  if [ "$expected" != "$actual" ]; then
+    printf 'pxyadm: SSH fingerprint mismatch.\n' >&2
+    return 1
+  fi
+
+  cp "$known_hosts" "$work/known_hosts" || return 1
+  ssh-keygen -R "$REMOTE_HOST" -f "$work/known_hosts" >/dev/null || return 1
+  printf '\n' >>"$work/known_hosts" || return 1
+  cat "$work/key" >>"$work/known_hosts" || return 1
+  mv -f "$work/known_hosts" "$known_hosts"
+)
+
+if [ "$reset" -eq 1 ] && ! repair_changed_host_key; then
+  printf 'pxyadm: could not verify and replace the SSH host key.\n' >&2
+  exit 1
+fi
 
 SERVICE="PXY-SSH-$REMOTE_HOST"
 STORE=none
